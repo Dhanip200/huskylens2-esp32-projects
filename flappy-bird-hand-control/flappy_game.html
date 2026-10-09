@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HuskyLens Flappy Bird</title>
+<style>
+  body { margin: 0; background: #1b1b2f; color: #fff; font-family: system-ui, sans-serif;
+         display: flex; flex-direction: column; align-items: center; }
+  h1 { margin: 12px 0 6px; font-size: 22px; }
+  #bar { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; justify-content: center; }
+  button { font-size: 16px; padding: 8px 16px; border: 0; border-radius: 8px; background: #f5c518; color: #222; cursor: pointer; font-weight: 600; }
+  button:disabled { background: #666; color: #ccc; cursor: default; }
+  #status { font-size: 14px; color: #bbb; }
+  #wrap { display: flex; gap: 10px; align-items: stretch; }
+  canvas { background: #70c5ce; border-radius: 8px; max-width: calc(100vw - 60px); height: auto; }
+  #meter { width: 18px; background: #333; border-radius: 8px; position: relative; }
+  #dot { position: absolute; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #888; top: 50%; transition: top .05s; }
+  #help { font-size: 13px; color: #aaa; margin: 8px 16px 8px; text-align: center; max-width: 520px; }
+  code { background: #333; padding: 1px 5px; border-radius: 4px; color: #f5c518; }
+  #logbox { width: min(440px, calc(100vw - 32px)); margin-bottom: 16px; }
+  #loghead { font-size: 13px; color: #ddd; margin-bottom: 4px; }
+  #loghead span { color: #888; }
+  #log { height: 120px; overflow-y: auto; background: #111; border-radius: 6px; padding: 6px 8px;
+         font: 13px/1.4 Consolas, monospace; }
+  #log .ok { color: #6fdc6f; }
+  #log .unknown { color: #888; }
+</style>
+</head>
+<body>
+<h1>HuskyLens Flappy Bird</h1>
+<div id="bar">
+  <button id="connect">Connect ESP32</button>
+  <span id="status">Not connected (Space / click also flaps)</span>
+</div>
+<div id="wrap">
+  <canvas id="game" width="400" height="600"></canvas>
+  <div id="meter" title="Your face height seen by HuskyLens"><div id="dot"></div></div>
+</div>
+<p id="help">Plug in the ESP32, click <b>Connect ESP32</b> and pick its COM port.
+Your ESP32 makes the bird flap by sending <code>Serial.println("F");</code> at <b>115200</b> baud
+(<code>FLAP</code>, <code>JUMP</code>, <code>UP</code> and <code>1</code> also work).
+Use Chrome or Edge, and close the Arduino Serial Monitor first, or the port will be busy.</p>
+<div id="logbox">
+  <div id="loghead">What your ESP32 is sending <span>(green = game understood it, grey = ignored)</span></div>
+  <div id="log"></div>
+</div>
+
+<script>
+const cv = document.getElementById('game');
+const ctx = cv.getContext('2d');
+const W = cv.width, H = cv.height;
+const GROUND = 80;
+// Difficulty: lower GRAVITY / PIPE_SPEED and bigger GAP = easier
+const GRAVITY = 0.22, FLAP_V = -5.8, MAX_FALL = 5, PIPE_W = 64, GAP = 220, PIPE_SPEED = 1.6, PIPE_EVERY = 170;
+
+let bird, pipes, frame, score, state; // state: 'ready' | 'play' | 'dead'
+let best = 0;
+try { best = +localStorage.getItem('huskyFlappyBest') || 0; } catch (e) {}
+
+function reset() {
+  bird = { x: 90, y: H / 2 - 40, v: 0, r: 15 };
+  pipes = []; frame = 0; score = 0; state = 'ready';
+}
+
+let deadAt = 0;
+function flap() {
+  if (state === 'ready') state = 'play';
+  if (state === 'dead') {
+    if (performance.now() - deadAt > 800) reset();  // short pause so a stray flap doesn't restart
+    return;
+  }
+  bird.v = FLAP_V;
+}
+
+function die() {
+  state = 'dead'; deadAt = performance.now();
+  if (score > best) { best = score; try { localStorage.setItem('huskyFlappyBest', best); } catch (e) {} }
+}
+
+function update() {
+  if (state === 'ready') { bird.y = H / 2 - 40 + Math.sin(frame / 10) * 8; frame++; return; }
+  if (state === 'dead') {
+    if (bird.y < H - GROUND - bird.r) { bird.v += GRAVITY; bird.y += bird.v; }
+    return;
+  }
+  frame++;
+  bird.v = Math.min(bird.v + GRAVITY, MAX_FALL); bird.y += bird.v;
+  if (frame % PIPE_EVERY === 0) {
+    const top = 60 + Math.random() * (H - GROUND - GAP - 120);
+    pipes.push({ x: W, top, passed: false });
+  }
+  for (const p of pipes) {
+    p.x -= PIPE_SPEED;
+    if (!p.passed && p.x + PIPE_W < bird.x) { p.passed = true; score++; }
+    const inX = bird.x + bird.r > p.x && bird.x - bird.r < p.x + PIPE_W;
+    const inGap = bird.y - bird.r > p.top && bird.y + bird.r < p.top + GAP;
+    if (inX && !inGap) die();
+  }
+  pipes = pipes.filter(p => p.x + PIPE_W > 0);
+  if (bird.y + bird.r > H - GROUND) { bird.y = H - GROUND - bird.r; die(); }
+  if (bird.y - bird.r < 0) { bird.y = bird.r; bird.v = 0; }
+}
+
+function drawPipe(x, y, h, flipCap) {
+  ctx.fillStyle = '#5ec639'; ctx.fillRect(x, y, PIPE_W, h);
+  ctx.fillStyle = '#4aa52c'; ctx.fillRect(x + PIPE_W - 10, y, 10, h);
+  ctx.fillStyle = '#5ec639';
+  const capY = flipCap ? y + h - 24 : y;
+  ctx.fillRect(x - 5, capY, PIPE_W + 10, 24);
+  ctx.strokeStyle = '#2d6e1a'; ctx.lineWidth = 3; ctx.strokeRect(x - 5, capY, PIPE_W + 10, 24);
+}
+
+function text(str, x, y, size) {
+  ctx.font = `bold ${size}px system-ui, sans-serif`; ctx.textAlign = 'center';
+  ctx.lineWidth = 6; ctx.strokeStyle = '#222'; ctx.strokeText(str, x, y);
+  ctx.fillStyle = '#fff'; ctx.fillText(str, x, y);
+}
+
+function draw() {
+  ctx.fillStyle = '#70c5ce'; ctx.fillRect(0, 0, W, H);
+  // clouds
+  ctx.fillStyle = '#e8f6f7';
+  for (let i = 0; i < 5; i++) {
+    const cx = ((i * 110 - frame * 0.4) % (W + 100) + W + 100) % (W + 100) - 50;
+    ctx.beginPath(); ctx.arc(cx, H - GROUND - 30, 40, 0, 7); ctx.arc(cx + 35, H - GROUND - 20, 30, 0, 7); ctx.fill();
+  }
+  for (const p of pipes) {
+    drawPipe(p.x, 0, p.top, true);
+    drawPipe(p.x, p.top + GAP, H - GROUND - p.top - GAP, false);
+  }
+  // ground
+  ctx.fillStyle = '#ded895'; ctx.fillRect(0, H - GROUND, W, GROUND);
+  ctx.fillStyle = '#5ec639'; ctx.fillRect(0, H - GROUND, W, 14);
+  // bird
+  ctx.save(); ctx.translate(bird.x, bird.y);
+  ctx.rotate(Math.max(-0.5, Math.min(1.2, bird.v / 10)));
+  ctx.fillStyle = '#f5c518'; ctx.beginPath(); ctx.arc(0, 0, bird.r, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#222'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(6, -5, 6, 0, 7); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(8, -5, 2.5, 0, 7); ctx.fill();
+  ctx.fillStyle = '#f06a2b'; ctx.beginPath(); ctx.moveTo(10, 2); ctx.lineTo(22, 5); ctx.lineTo(10, 9); ctx.fill();
+  ctx.fillStyle = '#fff3b0'; ctx.beginPath(); ctx.ellipse(-6, 3, 8, 5, -0.3, 0, 7); ctx.fill();
+  ctx.restore();
+
+  if (state !== 'ready') text(score, W / 2, 70, 48);
+  if (state === 'ready') { text('Move your hand UP', W / 2, 180, 30); text('to flap!', W / 2, 220, 30); }
+  if (state === 'dead') {
+    text('Game Over', W / 2, 200, 44);
+    text(`Score ${score}   Best ${best}`, W / 2, 250, 24);
+    text('Flap to play again', W / 2, 300, 22);
+  }
+}
+
+// Run the game at a fixed 60 updates/second, so it's the same speed on every screen
+const STEP = 1000 / 60;
+let last = performance.now(), acc = 0;
+function loop(now) {
+  acc = Math.min(acc + (now - last), 250); last = now;
+  while (acc >= STEP) { update(); acc -= STEP; }
+  draw(); requestAnimationFrame(loop);
+}
+reset(); requestAnimationFrame(loop);
+
+// Keyboard / mouse fallback
+addEventListener('keydown', e => { if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); flap(); } });
+cv.addEventListener('pointerdown', flap);
+
+// ---------- ESP32 over Web Serial ----------
+const statusEl = document.getElementById('status');
+const dot = document.getElementById('dot');
+const btn = document.getElementById('connect');
+
+const logEl = document.getElementById('log');
+function logLine(line, understood) {
+  const div = document.createElement('div');
+  div.textContent = line === '' ? '(empty line)' : line;
+  div.className = understood ? 'ok' : 'unknown';
+  logEl.appendChild(div);
+  while (logEl.childNodes.length > 60) logEl.removeChild(logEl.firstChild);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+const FLAP_WORDS = ['F', 'FLAP', 'JUMP', 'UP', '1'];
+function handleLine(raw) {
+  const line = raw.trim();
+  const cmd = line.toUpperCase();
+  const understood = FLAP_WORDS.includes(cmd) || /^Y:\s*\d+$/i.test(line) || cmd === 'N';
+  logLine(line, understood);
+  if (FLAP_WORDS.includes(cmd)) { flap(); dot.style.background = '#f5c518'; }
+  else if (/^Y:\s*\d+$/i.test(line)) {
+    const y = Math.max(0, Math.min(100, +line.slice(2)));
+    dot.style.top = `calc(${y}% - 7px)`;
+    dot.style.background = '#4caf50';
+  } else if (cmd === 'N') { dot.style.background = '#888'; statusEl.textContent = 'Connected - no face seen'; return; }
+  else return;
+  statusEl.textContent = 'Connected - face detected';
+}
+
+btn.addEventListener('click', async () => {
+  if (!('serial' in navigator)) { statusEl.textContent = 'Web Serial not supported - use Chrome or Edge'; return; }
+  try {
+    const port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    btn.disabled = true; statusEl.textContent = 'Connected - waiting for ESP32...';
+    const reader = port.readable.pipeThrough(new TextDecoderStream()).getReader();
+    let buf = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += value;
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) { handleLine(buf.slice(0, i)); buf = buf.slice(i + 1); }
+    }
+  } catch (err) {
+    statusEl.textContent = 'Serial error: ' + err.message;
+  }
+  btn.disabled = false;
+});
+</script>
+</body>
+</html>
